@@ -1,0 +1,130 @@
+#!/usr/bin/env ruby
+# encoding: utf-8
+
+# csv2ofx
+#
+# Converts my very specialized use case of CSV dumps from the Ally CashBack card
+# to an OFX file that YNAB can import.
+#
+# Usage:
+#   csv2ofx INPUT_FILE [OUTPUT_FILE]
+
+require "bigdecimal"
+require "csv"
+require "ostruct"
+
+# I'm using erubis because it has nice whitespace deletion features. If you
+# don't mind some wonky whitespace and prefer to stick with stdlib dependencies,
+# it should be a simple replacement (I'm not using any advanced features of
+# erubis)
+require "erubis"
+
+# Output file defaults to the input file with the file extension replaced with
+# OFX. If your report file doesn't end in .csv, then you'll probably have to
+# adjust this feature to simply append a ".ofx" to your file name.
+INPUT_FILE  = ARGV[0]
+OUTPUT_FILE = ARGV[1] || INPUT_FILE.to_s.reverse.split(".", 2).map(&:reverse)[1] + ".ofx"
+
+# I'm not entirely sure YNAB uses this. Might be safe to delete.
+ACCOUNT_NUMBER = ENV["CSV2OFX_ACCOUNT_NUMBER"] || 1234567890123456
+
+
+CSV_OPTIONS = { headers:            true,       # creates a hash instead of array
+                quote_char:         "|",        # some fields might have quotes in them
+                header_converters:  :symbol, }  # downcases, underscores, and symbelizes headers
+
+# This is where you map the header fields from your CSV to our internal
+# representation of those fields. These column headers will be different for
+# every provider.
+COLUMN_MAPPING = { payee:      :merchant,
+                   amount:     :billing_amount,
+                   posted:     :transaction_date,
+                   uid:        :reference_number,
+                   debit:      :debitcredit_flag, }
+
+@transactions = CSV.parse(File.read(INPUT_FILE), **CSV_OPTIONS).map do |transaction|
+  # Using OpenStruct simply because it makes things pretty. If you don't like
+  # it, you're welcome to change this to a straight up hash.
+  OpenStruct.new(**COLUMN_MAPPING.reduce({}) { |mapped, (key, orig_key)|
+    value = transaction[orig_key]
+
+    # Optionally transform the value based on which key we are expecting
+    case key
+    when :amount
+      value = BigDecimal(value.gsub!(/\$/, ''))
+      value = 0 - value if transaction[COLUMN_MAPPING[:debit]] == "D"
+
+    when :posted  then value = DateTime.strptime(value, "%m/%d/%Y")
+    when :uid     then value.strip!.gsub!(/"/,'')
+    when :debit   then value = (value.strip == "D")
+    end
+
+    # Insert the key/value pair into our final hash
+    mapped.merge(key => value)
+  })
+end.sort! { |a, b| a.posted <=> b.posted }
+
+# Write the file
+File.open(OUTPUT_FILE, "w") { |f| f.puts Erubis::Eruby.new(DATA.read).result(binding) }
+
+# The OFX template is provided here in the DATA section of the file. It's
+# relatively small and keeps the script portable.
+__END__
+OFXHEADER:100
+DATA:OFXSGML
+VERSION:102
+SECURITY:NONE
+ENCODING:USASCII
+CHARSET:1252
+COMPRESSION:NONE
+OLDFILEUID:NONE
+NEWFILEUID:NONE
+
+<OFX>
+  <SIGNONMSGSRSV1>
+    <SONRS>
+      <STATUS>
+        <CODE>0</CODE>
+        <SEVERITY>INFO</SEVERITY>
+        <MESSAGE>OK</MESSAGE>
+      </STATUS>
+      <DTSERVER><%= Time.now.strftime("%Y%m%d%H%M%S.000[-6]") %></DTSERVER>
+      <LANGUAGE>ENG</LANGUAGE>
+    </SONRS>
+  </SIGNONMSGSRSV1>
+  <BANKMSGSRSV1>
+    <STMTTRNRS>
+      <TRNUID>0</TRNUID>
+      <STATUS>
+        <CODE>0</CODE>
+        <SEVERITY>INFO</SEVERITY>
+        <MESSAGE>OK</MESSAGE>
+      </STATUS>
+      <STMTRS>
+        <CURDEF>USD</CURDEF>
+        <BANKACCTFROM>
+          <BANKID>1</BANKID>
+          <ACCTID><%= ACCOUNT_NUMBER %></ACCTID>
+          <ACCTTYPE>CHECKING</ACCTTYPE>
+        </BANKACCTFROM>
+        <BANKTRANLIST>
+          <DTSTART><%= @transactions.first.posted.strftime("%Y%m%d%H%M%S.000[-6]") %></DTSTART>
+          <DTEND><%= @transactions.last.posted.strftime("%Y%m%d130000.000[-6]") %></DTEND>
+          <% @transactions.each do |transaction| %>
+          <STMTTRN>
+            <TRNTYPE><%= transaction.debit ? "DEBIT" : "CREDIT" %></TRNTYPE>
+            <DTPOSTED><%= transaction.posted.strftime("%Y%m%d130000.000[-6]") %></DTPOSTED>
+            <TRNAMT><%= sprintf "%.2f", transaction.amount %></TRNAMT>
+            <FITID><%= transaction.uid %></FITID>
+            <NAME><%= transaction.payee %></NAME>
+          </STMTTRN>
+          <% end %>
+        </banktranlist>
+        <LEDGERBAL>
+          <BALAMT>0.00</BALAMT>
+          <DTASOF><%= Time.now.strftime("%Y%m%d%H%M%S.000[-6]") %></DTASOF>
+        </LEDGERBAL>
+      </STMTRS>
+    </STMTTRNRS>
+  </BANKMSGSRSV1>
+</OFX>

@@ -71,7 +71,7 @@ COLUMN_MAPPING = { payee:      :merchant,
     # Optionally transform the value based on which key we are expecting
     case key
     when :amount
-      value = BigDecimal(value.gsub!(/\$/, ''))
+      value = BigDecimal(value.gsub!(/[$()]/, ''))
       value = 0 - value if transaction[COLUMN_MAPPING[:debit]] == "D"
 
     when :posted  then value = DateTime.strptime(value, "%m/%d/%Y")

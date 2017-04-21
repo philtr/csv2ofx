@@ -62,7 +62,9 @@ COLUMN_MAPPING = { payee:      :merchant,
                    uid:        :reference_number,
                    debit:      :debitcredit_flag, }
 
-@transactions = CSV.parse(File.read(INPUT_FILE), **CSV_OPTIONS).map do |transaction|
+HANDLE = File.read(INPUT_FILE).gsub(/,\s?inc/i, "")
+
+@transactions = CSV.parse(HANDLE, **CSV_OPTIONS).map do |transaction|
   # Using OpenStruct simply because it makes things pretty. If you don't like
   # it, you're welcome to change this to a straight up hash.
   OpenStruct.new(**COLUMN_MAPPING.reduce({}) { |mapped, (key, orig_key)|
